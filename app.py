@@ -5,17 +5,16 @@ import openpyxl
 # CONFIGURAÇÃO
 # ==========================================================
 
-ARQUIVO = "pedidos.xlsx"
+ARQUIVO = "Data/pedidos.xlsx"
 
 # Taxas contratuais
-TAXA_COMISSAO_ESCALONADA   = 0.09     # Entrega própria — base: VALOR_ITENS bruto
-TAXA_COMISSAO_FLEX         = 0.20     # Entrega Flex
-TAXA_COMISSAO_SOB_DEMANDA  = 0.09     # Sob Demanda ON
-TAXA_COMISSAO_RETIRADA     = 0.0875   # Pra Retirar
-TAXA_TRANSACAO_ONLINE      = 0.03     # Pgto via APP — exceto VR/SODEXO/ALELO via APP
+TAXA_COMISSAO_ESCALONADA  = 0.09    # Entrega própria — base: VALOR_ITENS bruto
+TAXA_COMISSAO_FLEX        = 0.20    # Entrega Flex (referência)
+TAXA_COMISSAO_SOB_DEMANDA = 0.09    # Sob Demanda ON
+TAXA_COMISSAO_RETIRADA    = 0.0875  # Pra Retirar
+TAXA_TRANSACAO_ONLINE     = 0.03    # Pgto via APP exceto VR/SODEXO/ALELO
 
-# Pagamentos com taxa de transação ZERO (iFood isenta)
-# IFOOD MEAL VOUCHER e Outros vales NÃO estão aqui — pagam 3% e entram no repasse
+# Pagamentos ISENTOS da taxa de transação (VR via APP)
 ISENCAO_TAXA_TRANSACAO = [
     "Pgto via APP - Vale Refeição (VR)",
     "Pgto via APP - Vale Refeição (SODEXO)",
@@ -23,15 +22,17 @@ ISENCAO_TAXA_TRANSACAO = [
 ]
 
 # Pagamentos recebidos DIRETO NA LOJA (não entram no repasse iFood)
-# Regra: Dinheiro + qualquer "Pgto na Entrega" + VR/SODEXO/ALELO via APP
-PAGAMENTOS_DIRETO_LOJA = [
-    "Dinheiro",
-    "Outros vales",
-    "Pgto na Entrega",                          # cobre todos os subtipos via str.contains
-    "Pgto via APP - Vale Refeição (VR)",
-    "Pgto via APP - Vale Refeição (SODEXO)",
-    "Pgto via APP - Vale Refeição (ALELO)",
-]
+def eh_direto(pgto):
+    return (
+        pgto == "Dinheiro"
+        or pgto == "Outros vales"
+        or pgto.startswith("Pgto na Entrega")
+        or pgto in [
+            "Pgto via APP - Vale Refeição (VR)",
+            "Pgto via APP - Vale Refeição (SODEXO)",
+            "Pgto via APP - Vale Refeição (ALELO)",
+        ]
+    )
 
 # ==========================================================
 # LEITURA E LIMPEZA
@@ -70,116 +71,110 @@ df["_concluido"] = df["STATUS FINAL DO PEDIDO"].isin(["CONCLUIDO", "CANCELAMENTO
 df["_cancelado"] = df["STATUS FINAL DO PEDIDO"] == "CANCELADO"
 
 # Flags de logística
-df["_own_delivery"] = df["PRODUTO LOGISTICO"] == "SELF_DELIVERY_PARTIAL_AREA"
-df["_flex"]         = df["PRODUTO LOGISTICO"] == "ENTREGA FLEX"
-df["_sob_demanda"]  = df["PRODUTO LOGISTICO"] == "SOB DEMANDA ON"
-df["_retirada"]     = df["PRODUTO LOGISTICO"] == "RETIRADA"
+df["_own"]      = df["PRODUTO LOGISTICO"] == "SELF_DELIVERY_PARTIAL_AREA"
+df["_flex"]     = df["PRODUTO LOGISTICO"] == "ENTREGA FLEX"
+df["_sob"]      = df["PRODUTO LOGISTICO"] == "SOB DEMANDA ON"
+df["_retirada"] = df["PRODUTO LOGISTICO"] == "RETIRADA"
 
-# Flag: isento de taxa de transação (VR/SODEXO/ALELO via APP)
-df["_isento_taxa"] = df["FORMA DE PAGAMENTO"].isin(ISENCAO_TAXA_TRANSACAO)
-
-# Flag: pago via APP (inclui IFOOD MEAL VOUCHER — paga 3% de transação)
-df["_pgto_app"] = df["FORMA DE PAGAMENTO"].str.contains("Pgto via APP", case=False, na=False)
-
-# Base da taxa de transação: APP exceto isentos
-df["_base_transacao"] = df["_pgto_app"] & ~df["_isento_taxa"]
-
-# Flag: pagamento direto na loja (não entra no repasse iFood)
-def eh_direto(pgto):
-    return (
-        pgto == "Dinheiro"
-        or pgto == "Outros vales"
-        or pgto.startswith("Pgto na Entrega")
-        or pgto in [
-            "Pgto via APP - Vale Refeição (VR)",
-            "Pgto via APP - Vale Refeição (SODEXO)",
-            "Pgto via APP - Vale Refeição (ALELO)",
-        ]
-    )
-
-df["_direto_loja"] = df["FORMA DE PAGAMENTO"].apply(eh_direto)
+# Flags de pagamento
+df["_isento_taxa"]  = df["FORMA DE PAGAMENTO"].isin(ISENCAO_TAXA_TRANSACAO)
+df["_pgto_app"]     = df["FORMA DE PAGAMENTO"].str.contains("Pgto via APP", case=False, na=False)
+df["_base_trans"]   = df["_pgto_app"] & ~df["_isento_taxa"]
+df["_direto_loja"]  = df["FORMA DE PAGAMENTO"].apply(eh_direto)
 
 # ==========================================================
 # CÁLCULO POR LOJA
 # ==========================================================
 
 def calcular_loja(df_loja):
-    c  = df_loja[df_loja["_concluido"]]
-    ca = df_loja[df_loja["_cancelado"]]
+    c   = df_loja[df_loja["_concluido"]]   # concluídos + cancelamento parcial
+    ca  = df_loja[df_loja["_cancelado"]]   # cancelados
+    all_ = df_loja                          # todos os status
 
-    own      = c[c["_own_delivery"]]
-    flex     = c[c["_flex"]]
-    sob      = c[c["_sob_demanda"]]
+    # Subconjuntos por logística — ALL statuses (portal conta todos)
+    own_all  = all_[all_["_own"]]
+    flex_all = all_[all_["_flex"]]
+    sob_all  = all_[all_["_sob"]]
+
+    # Subconjuntos só concluídos (para valor das vendas, promoções, repasse)
+    own_c  = c[c["_own"]]
+    flex_c = c[c["_flex"]]
+    sob_c  = c[c["_sob"]]
+
+    # Reembolso comissão flex: apenas pedidos FLEX cancelados
     flex_canc = ca[ca["_flex"]]
 
-    base_transacao = c[c["_base_transacao"]]
-    diretos        = c[c["_direto_loja"]]
-    repasse_orders = c[~c["_direto_loja"]]
+    # Taxa de transação — ALL statuses (portal cobra em cancelados também)
+    trans_all = all_[all_["_base_trans"]]
+
+    # Repasse: apenas concluídos, separado por direto/iFood
+    diretos_c  = c[c["_direto_loja"]]
+    repasse_c  = c[~c["_direto_loja"]]
 
     # ── Valor das vendas ──────────────────────────────────────────
     valor_itens_entrega = (
         c["VALOR DOS ITENS (R$)"].sum()
-        + own["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
+        + own_c["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
     )
 
-    # ── Comissões cobradas (CSV) ──────────────────────────────────
-    comissao_own_cobrada  = own["TAXAS E COMISSOES (R$)"].sum()
-    comissao_flex_cobrada = flex["TAXAS E COMISSOES (R$)"].sum()
-    comissao_sob_cobrada  = sob["TAXAS E COMISSOES (R$)"].sum()
+    # ── Comissões cobradas (CSV) — ALL statuses ───────────────────
+    comissao_own_cobrada  = own_all["TAXAS E COMISSOES (R$)"].sum()
+    comissao_flex_cobrada = flex_all["TAXAS E COMISSOES (R$)"].sum()
+    comissao_sob_cobrada  = sob_all["TAXAS E COMISSOES (R$)"].sum()
     reembolso_flex_canc   = flex_canc["TAXAS E COMISSOES (R$)"].sum()
 
-    # ── Comissões esperadas (contrato) ────────────────────────────
-    # Base confirmada pelo portal: VALOR_ITENS bruto (sem descontar promoções)
-    base_own  = own["VALOR DOS ITENS (R$)"].sum()
-    base_flex = flex["VALOR DOS ITENS (R$)"].sum()
-    base_sob  = sob["VALOR DOS ITENS (R$)"].sum()
+    # ── Comissões esperadas (contrato) — base: VALOR_ITENS bruto ──
+    base_own  = own_all["VALOR DOS ITENS (R$)"].sum()
+    base_flex = flex_all["VALOR DOS ITENS (R$)"].sum()
+    base_sob  = sob_all["VALOR DOS ITENS (R$)"].sum()
 
     comissao_own_esp  = -(base_own  * TAXA_COMISSAO_ESCALONADA)
     comissao_flex_esp = -(base_flex * TAXA_COMISSAO_FLEX)
     comissao_sob_esp  = -(base_sob  * TAXA_COMISSAO_SOB_DEMANDA)
 
-    # ── Taxa de transação ─────────────────────────────────────────
-    taxa_trans_cobrada  = c["TAXA DE SERVIÇO (R$)"].sum()
-    base_trans_valor    = base_transacao["TOTAL PAGO PELO CLIENTE (R$)"].sum()
+    # ── Taxa de transação — ALL statuses ──────────────────────────
+    taxa_trans_cobrada  = all_["TAXA DE SERVIÇO (R$)"].sum()
+    base_trans_valor    = trans_all["TOTAL PAGO PELO CLIENTE (R$)"].sum()
     taxa_trans_esperada = -(base_trans_valor * TAXA_TRANSACAO_ONLINE)
 
     # ── Serviços ──────────────────────────────────────────────────
-    sob_demanda_servico = -sob["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
+    # Sob Demanda ON: taxa de entrega cobrada para pedidos SOB DEMANDA ON
+    sob_demanda_servico = -sob_all["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
 
-    # ── Promoções ─────────────────────────────────────────────────
+    # ── Promoções — apenas concluídos ────────────────────────────
     promo_loja  = -c["INCENTIVO PROMOCIONAL DA LOJA (R$)"].sum()
     promo_ifood =  c["INCENTIVO PROMOCIONAL DO IFOOD (R$)"].sum()
 
-    # ── Repasse ───────────────────────────────────────────────────
-    direto_loja   = diretos["TOTAL PAGO PELO CLIENTE (R$)"].sum()
-    valor_repasse = repasse_orders["VALOR LIQUIDO (R$)"].sum()
+    # ── Repasse — apenas concluídos ──────────────────────────────
+    direto_loja   = diretos_c["TOTAL PAGO PELO CLIENTE (R$)"].sum()
+    valor_repasse = repasse_c["VALOR LIQUIDO (R$)"].sum()
 
     return dict(
-        valor_itens_entrega     = valor_itens_entrega,
-        comissao_own_cobrada    = comissao_own_cobrada,
-        comissao_flex_cobrada   = comissao_flex_cobrada,
-        comissao_sob_cobrada    = comissao_sob_cobrada,
-        reembolso_flex_canc     = reembolso_flex_canc,
-        taxa_trans_cobrada      = taxa_trans_cobrada,
-        comissao_own_esp        = comissao_own_esp,
-        comissao_flex_esp       = comissao_flex_esp,
-        comissao_sob_esp        = comissao_sob_esp,
-        taxa_trans_esperada     = taxa_trans_esperada,
-        base_own                = base_own,
-        base_flex               = base_flex,
-        base_trans_valor        = base_trans_valor,
-        sob_demanda_servico     = sob_demanda_servico,
-        promo_loja              = promo_loja,
-        promo_ifood             = promo_ifood,
-        direto_loja             = direto_loja,
-        valor_repasse           = valor_repasse,
-        n_concluidos            = len(c),
-        n_cancelados            = len(ca),
-        n_own                   = len(own),
-        n_flex                  = len(flex),
-        n_sob                   = len(sob),
-        n_diretos               = len(diretos),
-        n_base_transacao        = len(base_transacao),
+        valor_itens_entrega    = valor_itens_entrega,
+        comissao_own_cobrada   = comissao_own_cobrada,
+        comissao_flex_cobrada  = comissao_flex_cobrada,
+        comissao_sob_cobrada   = comissao_sob_cobrada,
+        reembolso_flex_canc    = reembolso_flex_canc,
+        taxa_trans_cobrada     = taxa_trans_cobrada,
+        comissao_own_esp       = comissao_own_esp,
+        comissao_flex_esp      = comissao_flex_esp,
+        comissao_sob_esp       = comissao_sob_esp,
+        taxa_trans_esperada    = taxa_trans_esperada,
+        base_own               = base_own,
+        base_flex              = base_flex,
+        base_trans_valor       = base_trans_valor,
+        sob_demanda_servico    = sob_demanda_servico,
+        promo_loja             = promo_loja,
+        promo_ifood            = promo_ifood,
+        direto_loja            = direto_loja,
+        valor_repasse          = valor_repasse,
+        n_concluidos           = len(c),
+        n_cancelados           = len(ca),
+        n_own                  = len(own_all),
+        n_flex                 = len(flex_all),
+        n_sob                  = len(sob_all),
+        n_diretos              = len(diretos_c),
+        n_base_trans           = len(trans_all),
     )
 
 # ==========================================================
@@ -215,7 +210,7 @@ for loja in lojas:
 
     div_own  = r["comissao_own_cobrada"]  - r["comissao_own_esp"]
     div_flex = r["comissao_flex_cobrada"] - r["comissao_flex_esp"]
-    div_taxa = r["taxa_trans_cobrada"]    - (-r["taxa_trans_esperada"])
+    div_taxa = r["taxa_trans_cobrada"]    + r["taxa_trans_esperada"]  # ambos positivos
     totais["div_own"] += div_own
 
     tag = loja.split(" - ")[0]
@@ -234,7 +229,7 @@ for loja in lojas:
     flag_own = "  ✓" if abs(div_own) < 1 else f"  *** Δ {div_own:+,.2f}"
     linha(f"Comissão entrega própria ({r['n_own']} ped)",
           r["comissao_own_cobrada"], flag_own)
-    sublinha(f"base: VALOR_ITENS bruto",
+    sublinha(f"base: VALOR_ITENS bruto (todos status)",
              f"R$ {r['base_own']:>10,.2f}")
     sublinha(f"esperado {TAXA_COMISSAO_ESCALONADA*100:.0f}% (Escalonada contrato)",
              brl(r["comissao_own_esp"]))
@@ -242,11 +237,16 @@ for loja in lojas:
     flag_flex = "  ✓" if abs(div_flex) < 5 else f"  Δ {div_flex:+,.2f}"
     linha(f"Comissão entrega flex ({r['n_flex']} ped)",
           r["comissao_flex_cobrada"], flag_flex)
-    sublinha(f"base: VALOR_ITENS bruto",
+    sublinha(f"base: VALOR_ITENS bruto (todos status)",
              f"R$ {r['base_flex']:>10,.2f}")
     sublinha(f"esperado {TAXA_COMISSAO_FLEX*100:.0f}% (ref. contrato)",
              brl(r["comissao_flex_esp"]))
     sublinha("ℹ  Flex inclui custo logístico variável (não reproduzível por %)")
+
+    if r["reembolso_flex_canc"] != 0:
+        linha("Reembolso comissão flex cancelados",
+              r["reembolso_flex_canc"],
+              "  ← TAXAS E COMISSOES pedidos FLEX cancelados")
 
     if r["n_sob"] > 0:
         div_sob = r["comissao_sob_cobrada"] - r["comissao_sob_esp"]
@@ -254,15 +254,10 @@ for loja in lojas:
         linha(f"Comissão sob demanda ({r['n_sob']} ped)",
               r["comissao_sob_cobrada"], flag_sob)
 
-    if r["reembolso_flex_canc"] != 0:
-        linha("Reembolso comissão flex (cancelados)",
-              r["reembolso_flex_canc"],
-              "  ← TAXAS E COMISSOES pedidos FLEX cancelados")
-
     flag_taxa = "  ✓" if abs(div_taxa) < 1 else f"  Δ {div_taxa:+,.2f}"
-    linha(f"Taxa transação online ({r['n_base_transacao']} ped)",
+    linha(f"Taxa transação online ({r['n_base_trans']} ped)",
           r["taxa_trans_cobrada"], flag_taxa)
-    sublinha(f"base: Pgto APP (excl. VR/SODEXO/ALELO via APP)",
+    sublinha(f"base: Pgto APP excl. VR/SODEXO/ALELO (todos status)",
              f"R$ {r['base_trans_valor']:>10,.2f}")
     sublinha(f"esperado {TAXA_TRANSACAO_ONLINE*100:.0f}% (contrato)",
              brl(r["taxa_trans_esperada"]))
@@ -273,16 +268,16 @@ for loja in lojas:
     if r["sob_demanda_servico"] != 0:
         linha(f"Solicitação sob demanda ({r['n_sob']} ped)",
               r["sob_demanda_servico"],
-              "  ← taxa entrega pedidos SOB DEMANDA ON")
+              "  ← taxa entrega SOB DEMANDA ON")
     else:
         print(f"  {'Solicitação sob demanda':<50} {'R$       0,00':>14}  ← sem pedidos")
 
     # ── Promoções ─────────────────────────────────────────────────
     secao("PROMOÇÕES")
     linha("Incentivadas pela loja",  r["promo_loja"],
-          "  ← INCENTIVO PROMOCIONAL DA LOJA")
+          "  ← INCENTIVO PROMOCIONAL DA LOJA (concluídos)")
     linha("Incentivadas pelo iFood", r["promo_ifood"],
-          "  ← informativo (custo iFood, não da loja)")
+          "  ← informativo (custo iFood)")
 
     # ── Total do repasse ──────────────────────────────────────────
     secao("TOTAL DO REPASSE")
@@ -291,16 +286,16 @@ for loja in lojas:
           "  ← Dinheiro + Pgto na Entrega + VR/SODEXO/ALELO APP")
     linha("Valor do repasse iFood",
           r["valor_repasse"],
-          "  ← VALOR LIQUIDO pedidos não-diretos")
+          "  ← VALOR LIQUIDO pedidos não-diretos concluídos")
 
-    # ── Divergência da loja ───────────────────────────────────────
+    # ── Divergência ───────────────────────────────────────────────
     if abs(div_own) > 1:
         print(f"\n  {'─' * 66}")
         print(f"  ⚠  COBRANÇA INDEVIDA — Entrega Própria:  R$ {-div_own:,.2f}")
-        print(f"     {TAXA_COMISSAO_ESCALONADA*100:.0f}% esperado vs cobrado sobre "
-              f"R$ {r['base_own']:,.2f} (VALOR_ITENS bruto)")
+        print(f"     {TAXA_COMISSAO_ESCALONADA*100:.0f}% contratado vs cobrado "
+              f"sobre R$ {r['base_own']:,.2f}")
 
-# ── Resumo geral ──────────────────────────────────────────────────
+# ── Resumo ────────────────────────────────────────────────────────
 print(f"\n{SEP}")
 print(f"  RESUMO — DIVERGÊNCIAS DA SEMANA (3 lojas)")
 print(f"{'─' * 70}")
