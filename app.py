@@ -5,7 +5,7 @@ import openpyxl
 # CONFIGURAÇÃO
 # ==========================================================
 
-ARQUIVO = "Data/pedidos.xlsx"
+ARQUIVO = "pedidos.xlsx"
 
 # Taxas contratuais
 TAXA_COMISSAO_ESCALONADA  = 0.09    # Entrega própria — base: VALOR_ITENS bruto
