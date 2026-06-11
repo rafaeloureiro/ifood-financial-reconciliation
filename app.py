@@ -5,304 +5,374 @@ import openpyxl
 # CONFIGURAÇÃO
 # ==========================================================
 
-ARQUIVO = r"C:\Users\rafae\OneDrive\Desktop\Lab. de testes\Relatorios Ifood\conciliacao-de-faturamento\conciliacao_02\pedidos.xlsx"
+CAMINHO_PLANILHA = r"C:\Users\rafae\OneDrive\Desktop\Lab. de testes\Relatorios Ifood\conciliacao-de-faturamento\conciliacao_02\pedidos.xlsx"
 
-# Taxas contratuais
-TAXA_COMISSAO_ESCALONADA  = 0.09    # Entrega própria — base: VALOR_ITENS bruto
-TAXA_COMISSAO_FLEX        = 0.20    # Entrega Flex (referência)
-TAXA_COMISSAO_SOB_DEMANDA = 0.09    # Sob Demanda ON
-TAXA_COMISSAO_RETIRADA    = 0.0875  # Pra Retirar
-TAXA_TRANSACAO_ONLINE     = 0.03    # Pgto via APP exceto VR/SODEXO/ALELO
+# Taxas contratuais por modalidade de entrega
+COMISSAO_ENTREGA_PROPRIA  = 0.09    # SELF_DELIVERY — base: valor dos itens bruto
+COMISSAO_ENTREGA_FLEX     = 0.20    # Entrega Flex (referência contratual)
+COMISSAO_SOB_DEMANDA      = 0.09    # Sob Demanda ON
+COMISSAO_RETIRADA_LOJA    = 0.0875  # Pra Retirar
+TAXA_TRANSACAO_PAGAMENTO_APP = 0.03 # Pagamentos via APP, exceto VR/SODEXO/ALELO
 
-# Pagamentos ISENTOS da taxa de transação (VR via APP)
-ISENCAO_TAXA_TRANSACAO = [
+# Formas de pagamento isentas da taxa de transação
+FORMAS_PAGAMENTO_ISENTAS_TAXA = [
     "Pgto via APP - Vale Refeição (VR)",
     "Pgto via APP - Vale Refeição (SODEXO)",
     "Pgto via APP - Vale Refeição (ALELO)",
 ]
 
-# Pagamentos recebidos DIRETO NA LOJA (não entram no repasse iFood)
-def eh_direto(pgto):
+# Formas de pagamento recebidas diretamente na loja (não entram no repasse iFood)
+FORMAS_PAGAMENTO_DIRETO_LOJA = [
+    "Pgto via APP - Vale Refeição (VR)",
+    "Pgto via APP - Vale Refeição (SODEXO)",
+    "Pgto via APP - Vale Refeição (ALELO)",
+]
+
+def pagamento_recebido_na_loja(forma_de_pagamento: str) -> bool:
     return (
-        pgto == "Dinheiro"
-        or pgto == "Outros vales"
-        or pgto.startswith("Pgto na Entrega")
-        or pgto in [
-            "Pgto via APP - Vale Refeição (VR)",
-            "Pgto via APP - Vale Refeição (SODEXO)",
-            "Pgto via APP - Vale Refeição (ALELO)",
-        ]
+        forma_de_pagamento == "Dinheiro"
+        or forma_de_pagamento == "Outros vales"
+        or forma_de_pagamento.startswith("Pgto na Entrega")
+        or forma_de_pagamento in FORMAS_PAGAMENTO_DIRETO_LOJA
     )
+
 
 # ==========================================================
 # LEITURA E LIMPEZA
 # ==========================================================
 
-with open(ARQUIVO, "rb") as f:
-    wb = openpyxl.load_workbook(f)
-    ws = wb.active
-    headers = [cell.value for cell in ws[1]]
-    rows = [dict(zip(headers, row)) for row in ws.iter_rows(min_row=2, values_only=True)]
+def carregar_planilha(caminho: str) -> pd.DataFrame:
+    with open(caminho, "rb") as arquivo:
+        workbook = openpyxl.load_workbook(arquivo)
+        planilha = workbook.active
+        cabecalhos = [celula.value for celula in planilha[1]]
+        linhas = [
+            dict(zip(cabecalhos, linha))
+            for linha in planilha.iter_rows(min_row=2, values_only=True)
+        ]
+    return pd.DataFrame(linhas)
 
-df = pd.DataFrame(rows)
-df.columns = df.columns.str.strip()
 
-COLUNAS_MONETARIAS = [
-    "VALOR DOS ITENS (R$)",
-    "TAXA DE ENTREGA PAGA PELO CLIENTE (R$)",
-    "TOTAL PAGO PELO CLIENTE (R$)",
-    "INCENTIVO PROMOCIONAL DO IFOOD (R$)",
-    "INCENTIVO PROMOCIONAL DA LOJA (R$)",
-    "INCENTIVO PROMOCIONAL DA REDE (R$)",
-    "TAXA DE SERVIÇO (R$)",
-    "TAXAS E COMISSOES (R$)",
-    "VALOR LIQUIDO (R$)",
-]
-for col in COLUNAS_MONETARIAS:
-    if col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+def limpar_e_classificar_pedidos(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = df.columns.str.strip()
 
-df["PRODUTO LOGISTICO"]      = df["PRODUTO LOGISTICO"].fillna("").str.strip()
-df["FORMA DE PAGAMENTO"]     = df["FORMA DE PAGAMENTO"].fillna("").str.strip()
-df["STATUS FINAL DO PEDIDO"] = df["STATUS FINAL DO PEDIDO"].fillna("").str.strip()
+    colunas_monetarias = [
+        "VALOR DOS ITENS (R$)",
+        "TOTAL PAGO PELO CLIENTE (R$)",
+        "TAXA DE ENTREGA PAGA PELO CLIENTE (R$)",
+        "INCENTIVO PROMOCIONAL DO IFOOD (R$)",
+        "INCENTIVO PROMOCIONAL DA LOJA (R$)",
+        "INCENTIVO PROMOCIONAL DA REDE (R$)",
+        "TAXA DE SERVIÇO (R$)",
+        "TAXAS E COMISSOES (R$)",
+        "VALOR LIQUIDO (R$)",
+    ]
+    for coluna in colunas_monetarias:
+        if coluna in df.columns:
+            df[coluna] = pd.to_numeric(df[coluna], errors="coerce").fillna(0)
 
-# Flags de status
-df["_concluido"] = df["STATUS FINAL DO PEDIDO"].isin(["CONCLUIDO", "CANCELAMENTO PARCIAL"])
-df["_cancelado"] = df["STATUS FINAL DO PEDIDO"] == "CANCELADO"
+    df["PRODUTO LOGISTICO"]      = df["PRODUTO LOGISTICO"].fillna("").str.strip()
+    df["FORMA DE PAGAMENTO"]     = df["FORMA DE PAGAMENTO"].fillna("").str.strip()
+    df["STATUS FINAL DO PEDIDO"] = df["STATUS FINAL DO PEDIDO"].fillna("").str.strip()
 
-# Flags de logística
-df["_own"]      = df["PRODUTO LOGISTICO"] == "SELF_DELIVERY_PARTIAL_AREA"
-df["_flex"]     = df["PRODUTO LOGISTICO"] == "ENTREGA FLEX"
-df["_sob"]      = df["PRODUTO LOGISTICO"] == "SOB DEMANDA ON"
-df["_retirada"] = df["PRODUTO LOGISTICO"] == "RETIRADA"
+    # Status do pedido
+    df["pedido_concluido"] = df["STATUS FINAL DO PEDIDO"].isin(["CONCLUIDO", "CANCELAMENTO PARCIAL"])
+    df["pedido_cancelado"] = df["STATUS FINAL DO PEDIDO"] == "CANCELADO"
 
-# Flags de pagamento
-df["_isento_taxa"]  = df["FORMA DE PAGAMENTO"].isin(ISENCAO_TAXA_TRANSACAO)
-df["_pgto_app"]     = df["FORMA DE PAGAMENTO"].str.contains("Pgto via APP", case=False, na=False)
-df["_base_trans"]   = df["_pgto_app"] & ~df["_isento_taxa"]
-df["_direto_loja"]  = df["FORMA DE PAGAMENTO"].apply(eh_direto)
+    # Modalidade de entrega
+    df["entrega_propria"] = df["PRODUTO LOGISTICO"] == "SELF_DELIVERY_PARTIAL_AREA"
+    df["entrega_flex"]    = df["PRODUTO LOGISTICO"] == "ENTREGA FLEX"
+    df["sob_demanda"]     = df["PRODUTO LOGISTICO"] == "SOB DEMANDA ON"
+    df["retirada_loja"]   = df["PRODUTO LOGISTICO"] == "RETIRADA"
+
+    # Forma de pagamento
+    df["pagamento_isento_taxa"]   = df["FORMA DE PAGAMENTO"].isin(FORMAS_PAGAMENTO_ISENTAS_TAXA)
+    df["pagamento_via_app"]       = df["FORMA DE PAGAMENTO"].str.contains("Pgto via APP", case=False, na=False)
+    df["pagamento_sujeito_taxa"]  = df["pagamento_via_app"] & ~df["pagamento_isento_taxa"]
+    df["pagamento_direto_na_loja"] = df["FORMA DE PAGAMENTO"].apply(pagamento_recebido_na_loja)
+
+    return df
+
 
 # ==========================================================
 # CÁLCULO POR LOJA
 # ==========================================================
 
-def calcular_loja(df_loja):
-    c   = df_loja[df_loja["_concluido"]]   # concluídos + cancelamento parcial
-    ca  = df_loja[df_loja["_cancelado"]]   # cancelados
-    all_ = df_loja                          # todos os status
+def calcular_metricas_da_loja(pedidos_loja: pd.DataFrame) -> dict:
+    pedidos_concluidos  = pedidos_loja[pedidos_loja["pedido_concluido"]]
+    pedidos_cancelados  = pedidos_loja[pedidos_loja["pedido_cancelado"]]
+    todos_pedidos       = pedidos_loja
 
-    # Subconjuntos por logística — ALL statuses (portal conta todos)
-    own_all  = all_[all_["_own"]]
-    flex_all = all_[all_["_flex"]]
-    sob_all  = all_[all_["_sob"]]
+    # Filtros por modalidade — todos os status (o portal conta todos)
+    todos_entrega_propria = todos_pedidos[todos_pedidos["entrega_propria"]]
+    todos_entrega_flex    = todos_pedidos[todos_pedidos["entrega_flex"]]
+    todos_sob_demanda     = todos_pedidos[todos_pedidos["sob_demanda"]]
 
-    # Subconjuntos só concluídos (para valor das vendas, promoções, repasse)
-    own_c  = c[c["_own"]]
-    flex_c = c[c["_flex"]]
-    sob_c  = c[c["_sob"]]
+    # Filtros por modalidade — apenas concluídos (base de receita e promoções)
+    concluidos_entrega_propria = pedidos_concluidos[pedidos_concluidos["entrega_propria"]]
+    concluidos_entrega_flex    = pedidos_concluidos[pedidos_concluidos["entrega_flex"]]
+    concluidos_sob_demanda     = pedidos_concluidos[pedidos_concluidos["sob_demanda"]]
 
-    # Reembolso comissão flex: apenas pedidos FLEX cancelados
-    flex_canc = ca[ca["_flex"]]
+    # Flex cancelados: usados para calcular o reembolso de comissão
+    cancelados_entrega_flex = pedidos_cancelados[pedidos_cancelados["entrega_flex"]]
 
-    # Taxa de transação — ALL statuses (portal cobra em cancelados também)
-    trans_all = all_[all_["_base_trans"]]
+    # Pagamentos sujeitos à taxa de transação — todos os status (portal cobra mesmo em cancelados)
+    todos_com_taxa_transacao = todos_pedidos[todos_pedidos["pagamento_sujeito_taxa"]]
 
-    # Repasse: apenas concluídos, separado por direto/iFood
-    diretos_c  = c[c["_direto_loja"]]
-    repasse_c  = c[~c["_direto_loja"]]
+    # Repasse: apenas concluídos, separado por quem recebe
+    concluidos_pagamento_direto = pedidos_concluidos[pedidos_concluidos["pagamento_direto_na_loja"]]
+    concluidos_repasse_ifood    = pedidos_concluidos[~pedidos_concluidos["pagamento_direto_na_loja"]]
 
     # ── Valor das vendas ──────────────────────────────────────────
-    valor_itens_entrega = (
-        c["VALOR DOS ITENS (R$)"].sum()
-        + own_c["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
+    valor_total_vendas = (
+        pedidos_concluidos["VALOR DOS ITENS (R$)"].sum()
+        + concluidos_entrega_propria["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
     )
 
-    # ── Comissões cobradas (CSV) — ALL statuses ───────────────────
-    comissao_own_cobrada  = own_all["TAXAS E COMISSOES (R$)"].sum()
-    comissao_flex_cobrada = flex_all["TAXAS E COMISSOES (R$)"].sum()
-    comissao_sob_cobrada  = sob_all["TAXAS E COMISSOES (R$)"].sum()
-    reembolso_flex_canc   = flex_canc["TAXAS E COMISSOES (R$)"].sum()
+    # ── Comissões cobradas pelo iFood (conforme CSV) ──────────────
+    comissao_cobrada_entrega_propria = todos_entrega_propria["TAXAS E COMISSOES (R$)"].sum()
+    comissao_cobrada_entrega_flex    = todos_entrega_flex["TAXAS E COMISSOES (R$)"].sum()
+    comissao_cobrada_sob_demanda     = todos_sob_demanda["TAXAS E COMISSOES (R$)"].sum()
+    reembolso_comissao_flex_cancelados = cancelados_entrega_flex["TAXAS E COMISSOES (R$)"].sum()
 
-    # ── Comissões esperadas (contrato) — base: VALOR_ITENS bruto ──
-    base_own  = own_all["VALOR DOS ITENS (R$)"].sum()
-    base_flex = flex_all["VALOR DOS ITENS (R$)"].sum()
-    base_sob  = sob_all["VALOR DOS ITENS (R$)"].sum()
+    # ── Comissões esperadas pelo contrato (base: valor dos itens bruto) ──
+    base_calculo_entrega_propria = todos_entrega_propria["VALOR DOS ITENS (R$)"].sum()
+    base_calculo_entrega_flex    = todos_entrega_flex["VALOR DOS ITENS (R$)"].sum()
+    base_calculo_sob_demanda     = todos_sob_demanda["VALOR DOS ITENS (R$)"].sum()
 
-    comissao_own_esp  = -(base_own  * TAXA_COMISSAO_ESCALONADA)
-    comissao_flex_esp = -(base_flex * TAXA_COMISSAO_FLEX)
-    comissao_sob_esp  = -(base_sob  * TAXA_COMISSAO_SOB_DEMANDA)
+    comissao_esperada_entrega_propria = -(base_calculo_entrega_propria * COMISSAO_ENTREGA_PROPRIA)
+    comissao_esperada_entrega_flex    = -(base_calculo_entrega_flex    * COMISSAO_ENTREGA_FLEX)
+    comissao_esperada_sob_demanda     = -(base_calculo_sob_demanda     * COMISSAO_SOB_DEMANDA)
 
-    # ── Taxa de transação — ALL statuses ──────────────────────────
-    taxa_trans_cobrada  = all_["TAXA DE SERVIÇO (R$)"].sum()
-    base_trans_valor    = trans_all["TOTAL PAGO PELO CLIENTE (R$)"].sum()
-    taxa_trans_esperada = -(base_trans_valor * TAXA_TRANSACAO_ONLINE)
+    # ── Taxa de transação ─────────────────────────────────────────
+    taxa_transacao_cobrada  = todos_pedidos["TAXA DE SERVIÇO (R$)"].sum()
+    base_calculo_taxa_transacao = todos_com_taxa_transacao["TOTAL PAGO PELO CLIENTE (R$)"].sum()
+    taxa_transacao_esperada = -(base_calculo_taxa_transacao * TAXA_TRANSACAO_PAGAMENTO_APP)
 
     # ── Serviços ──────────────────────────────────────────────────
-    # Sob Demanda ON: taxa de entrega cobrada para pedidos SOB DEMANDA ON
-    sob_demanda_servico = -sob_all["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
+    # Taxa de entrega cobrada nos pedidos Sob Demanda ON
+    custo_logistico_sob_demanda = -todos_sob_demanda["TAXA DE ENTREGA PAGA PELO CLIENTE (R$)"].sum()
 
-    # ── Promoções — apenas concluídos ────────────────────────────
-    promo_loja  = -c["INCENTIVO PROMOCIONAL DA LOJA (R$)"].sum()
-    promo_ifood =  c["INCENTIVO PROMOCIONAL DO IFOOD (R$)"].sum()
+    # ── Promoções (apenas pedidos concluídos) ─────────────────────
+    desconto_promocional_loja  = -pedidos_concluidos["INCENTIVO PROMOCIONAL DA LOJA (R$)"].sum()
+    incentivo_promocional_ifood =  pedidos_concluidos["INCENTIVO PROMOCIONAL DO IFOOD (R$)"].sum()
 
-    # ── Repasse — apenas concluídos ──────────────────────────────
-    direto_loja   = diretos_c["TOTAL PAGO PELO CLIENTE (R$)"].sum()
-    valor_repasse = repasse_c["VALOR LIQUIDO (R$)"].sum()
+    # ── Repasse ───────────────────────────────────────────────────
+    total_recebido_direto_na_loja = concluidos_pagamento_direto["TOTAL PAGO PELO CLIENTE (R$)"].sum()
+    total_repasse_ifood           = concluidos_repasse_ifood["VALOR LIQUIDO (R$)"].sum()
 
     return dict(
-        valor_itens_entrega    = valor_itens_entrega,
-        comissao_own_cobrada   = comissao_own_cobrada,
-        comissao_flex_cobrada  = comissao_flex_cobrada,
-        comissao_sob_cobrada   = comissao_sob_cobrada,
-        reembolso_flex_canc    = reembolso_flex_canc,
-        taxa_trans_cobrada     = taxa_trans_cobrada,
-        comissao_own_esp       = comissao_own_esp,
-        comissao_flex_esp      = comissao_flex_esp,
-        comissao_sob_esp       = comissao_sob_esp,
-        taxa_trans_esperada    = taxa_trans_esperada,
-        base_own               = base_own,
-        base_flex              = base_flex,
-        base_trans_valor       = base_trans_valor,
-        sob_demanda_servico    = sob_demanda_servico,
-        promo_loja             = promo_loja,
-        promo_ifood            = promo_ifood,
-        direto_loja            = direto_loja,
-        valor_repasse          = valor_repasse,
-        n_concluidos           = len(c),
-        n_cancelados           = len(ca),
-        n_own                  = len(own_all),
-        n_flex                 = len(flex_all),
-        n_sob                  = len(sob_all),
-        n_diretos              = len(diretos_c),
-        n_base_trans           = len(trans_all),
+        valor_total_vendas                   = valor_total_vendas,
+        comissao_cobrada_entrega_propria      = comissao_cobrada_entrega_propria,
+        comissao_cobrada_entrega_flex         = comissao_cobrada_entrega_flex,
+        comissao_cobrada_sob_demanda          = comissao_cobrada_sob_demanda,
+        reembolso_comissao_flex_cancelados    = reembolso_comissao_flex_cancelados,
+        taxa_transacao_cobrada               = taxa_transacao_cobrada,
+        comissao_esperada_entrega_propria     = comissao_esperada_entrega_propria,
+        comissao_esperada_entrega_flex        = comissao_esperada_entrega_flex,
+        comissao_esperada_sob_demanda         = comissao_esperada_sob_demanda,
+        taxa_transacao_esperada              = taxa_transacao_esperada,
+        base_calculo_entrega_propria          = base_calculo_entrega_propria,
+        base_calculo_entrega_flex             = base_calculo_entrega_flex,
+        base_calculo_taxa_transacao           = base_calculo_taxa_transacao,
+        custo_logistico_sob_demanda           = custo_logistico_sob_demanda,
+        desconto_promocional_loja            = desconto_promocional_loja,
+        incentivo_promocional_ifood          = incentivo_promocional_ifood,
+        total_recebido_direto_na_loja        = total_recebido_direto_na_loja,
+        total_repasse_ifood                  = total_repasse_ifood,
+        qtd_pedidos_concluidos               = len(pedidos_concluidos),
+        qtd_pedidos_cancelados               = len(pedidos_cancelados),
+        qtd_pedidos_entrega_propria           = len(todos_entrega_propria),
+        qtd_pedidos_entrega_flex              = len(todos_entrega_flex),
+        qtd_pedidos_sob_demanda               = len(todos_sob_demanda),
+        qtd_pedidos_direto_na_loja            = len(concluidos_pagamento_direto),
+        qtd_pedidos_com_taxa_transacao        = len(todos_com_taxa_transacao),
     )
+
 
 # ==========================================================
 # IMPRESSÃO DO RELATÓRIO
 # ==========================================================
 
-def brl(v):
-    sinal = "-" if v < 0 else " "
-    return f"{sinal}R$ {abs(v):>10,.2f}"
+def formatar_brl(valor: float) -> str:
+    sinal = "-" if valor < 0 else " "
+    return f"{sinal}R$ {abs(valor):>10,.2f}"
 
-def linha(label, valor, nota=""):
-    print(f"  {label:<50} {brl(valor)}{nota}")
+def imprimir_linha(label: str, valor: float, nota: str = "") -> None:
+    print(f"  {label:<50} {formatar_brl(valor)}{nota}")
 
-def sublinha(label, detalhe=""):
-    print(f"    {label:<48} {detalhe}")
+def imprimir_detalhe(label: str, complemento: str = "") -> None:
+    print(f"    {label:<48} {complemento}")
 
-def secao(titulo):
+def imprimir_cabecalho_secao(titulo: str) -> None:
     print(f"\n  {titulo}")
     print(f"  {'─' * 66}")
 
-SEP = "=" * 70
-lojas = sorted(df["NOME DA LOJA"].dropna().astype(str).str.strip().unique())
-totais = dict(div_own=0.0)
 
-print(f"\n{SEP}")
+SEPARADOR = "=" * 70
+
+df = carregar_planilha(CAMINHO_PLANILHA)
+df = limpar_e_classificar_pedidos(df)
+
+nomes_das_lojas = sorted(df["NOME DA LOJA"].dropna().astype(str).str.strip().unique())
+divergencia_entrega_propria_total = 0.0
+
+print(f"\n{SEPARADOR}")
 print(f"  CONCILIAÇÃO DE FATURAMENTO iFood")
 print(f"  Período: 01/06/2026 a 07/06/2026")
-print(f"{SEP}")
+print(f"{SEPARADOR}")
 
-for loja in lojas:
-    df_loja = df[df["NOME DA LOJA"].astype(str).str.strip() == loja]
-    r = calcular_loja(df_loja)
+for nome_loja in nomes_das_lojas:
+    pedidos_loja = df[df["NOME DA LOJA"].astype(str).str.strip() == nome_loja]
+    metricas = calcular_metricas_da_loja(pedidos_loja)
 
-    div_own  = r["comissao_own_cobrada"]  - r["comissao_own_esp"]
-    div_flex = r["comissao_flex_cobrada"] - r["comissao_flex_esp"]
-    div_taxa = r["taxa_trans_cobrada"]    + r["taxa_trans_esperada"]  # ambos positivos
-    totais["div_own"] += div_own
+    divergencia_entrega_propria = (
+        metricas["comissao_cobrada_entrega_propria"]
+        - metricas["comissao_esperada_entrega_propria"]
+    )
+    divergencia_entrega_flex = (
+        metricas["comissao_cobrada_entrega_flex"]
+        - metricas["comissao_esperada_entrega_flex"]
+    )
+    divergencia_taxa_transacao = (
+        metricas["taxa_transacao_cobrada"]
+        + metricas["taxa_transacao_esperada"]
+    )
+    divergencia_entrega_propria_total += divergencia_entrega_propria
 
-    tag = loja.split(" - ")[0]
+    tag_loja = nome_loja.split(" - ")[0]
     print(f"\n{'─' * 70}")
-    print(f"  {tag.upper()}   ({r['n_concluidos']} concluídos | {r['n_cancelados']} cancelados)")
+    print(f"  {tag_loja.upper()}   ({metricas['qtd_pedidos_concluidos']} concluídos | {metricas['qtd_pedidos_cancelados']} cancelados)")
     print(f"{'─' * 70}")
 
     # ── Valor das vendas ──────────────────────────────────────────
-    secao("VALOR DAS VENDAS")
-    linha("Valor dos itens + entrega própria", r["valor_itens_entrega"])
-    sublinha("itens (concluídos) + taxa entrega SELF_DELIVERY")
+    imprimir_cabecalho_secao("VALOR DAS VENDAS")
+    imprimir_linha("Valor dos itens + entrega própria", metricas["valor_total_vendas"])
+    imprimir_detalhe("itens (concluídos) + taxa entrega SELF_DELIVERY")
 
     # ── Taxas e comissões ─────────────────────────────────────────
-    secao("TAXAS E COMISSÕES")
+    imprimir_cabecalho_secao("TAXAS E COMISSÕES")
 
-    flag_own = "  ✓" if abs(div_own) < 1 else f"  *** Δ {div_own:+,.2f}"
-    linha(f"Comissão entrega própria ({r['n_own']} ped)",
-          r["comissao_own_cobrada"], flag_own)
-    sublinha(f"base: VALOR_ITENS bruto (todos status)",
-             f"R$ {r['base_own']:>10,.2f}")
-    sublinha(f"esperado {TAXA_COMISSAO_ESCALONADA*100:.0f}% (Escalonada contrato)",
-             brl(r["comissao_own_esp"]))
+    flag_entrega_propria = "  ✓" if abs(divergencia_entrega_propria) < 1 else f"  *** Δ {divergencia_entrega_propria:+,.2f}"
+    imprimir_linha(
+        f"Comissão entrega própria ({metricas['qtd_pedidos_entrega_propria']} ped)",
+        metricas["comissao_cobrada_entrega_propria"],
+        flag_entrega_propria,
+    )
+    imprimir_detalhe(
+        "base: VALOR_ITENS bruto (todos status)",
+        f"R$ {metricas['base_calculo_entrega_propria']:>10,.2f}",
+    )
+    imprimir_detalhe(
+        f"esperado {COMISSAO_ENTREGA_PROPRIA*100:.0f}% (Escalonada contrato)",
+        formatar_brl(metricas["comissao_esperada_entrega_propria"]),
+    )
 
-    flag_flex = "  ✓" if abs(div_flex) < 5 else f"  Δ {div_flex:+,.2f}"
-    linha(f"Comissão entrega flex ({r['n_flex']} ped)",
-          r["comissao_flex_cobrada"], flag_flex)
-    sublinha(f"base: VALOR_ITENS bruto (todos status)",
-             f"R$ {r['base_flex']:>10,.2f}")
-    sublinha(f"esperado {TAXA_COMISSAO_FLEX*100:.0f}% (ref. contrato)",
-             brl(r["comissao_flex_esp"]))
-    sublinha("ℹ  Flex inclui custo logístico variável (não reproduzível por %)")
+    flag_entrega_flex = "  ✓" if abs(divergencia_entrega_flex) < 5 else f"  Δ {divergencia_entrega_flex:+,.2f}"
+    imprimir_linha(
+        f"Comissão entrega flex ({metricas['qtd_pedidos_entrega_flex']} ped)",
+        metricas["comissao_cobrada_entrega_flex"],
+        flag_entrega_flex,
+    )
+    imprimir_detalhe(
+        "base: VALOR_ITENS bruto (todos status)",
+        f"R$ {metricas['base_calculo_entrega_flex']:>10,.2f}",
+    )
+    imprimir_detalhe(
+        f"esperado {COMISSAO_ENTREGA_FLEX*100:.0f}% (ref. contrato)",
+        formatar_brl(metricas["comissao_esperada_entrega_flex"]),
+    )
+    imprimir_detalhe("ℹ  Flex inclui custo logístico variável (não reproduzível por %)")
 
-    if r["reembolso_flex_canc"] != 0:
-        linha("Reembolso comissão flex cancelados",
-              r["reembolso_flex_canc"],
-              "  ← TAXAS E COMISSOES pedidos FLEX cancelados")
+    if metricas["reembolso_comissao_flex_cancelados"] != 0:
+        imprimir_linha(
+            "Reembolso comissão flex cancelados",
+            metricas["reembolso_comissao_flex_cancelados"],
+            "  ← TAXAS E COMISSOES pedidos FLEX cancelados",
+        )
 
-    if r["n_sob"] > 0:
-        div_sob = r["comissao_sob_cobrada"] - r["comissao_sob_esp"]
-        flag_sob = "  ✓" if abs(div_sob) < 1 else f"  Δ {div_sob:+,.2f}"
-        linha(f"Comissão sob demanda ({r['n_sob']} ped)",
-              r["comissao_sob_cobrada"], flag_sob)
+    if metricas["qtd_pedidos_sob_demanda"] > 0:
+        divergencia_sob_demanda = (
+            metricas["comissao_cobrada_sob_demanda"]
+            - metricas["comissao_esperada_sob_demanda"]
+        )
+        flag_sob_demanda = "  ✓" if abs(divergencia_sob_demanda) < 1 else f"  Δ {divergencia_sob_demanda:+,.2f}"
+        imprimir_linha(
+            f"Comissão sob demanda ({metricas['qtd_pedidos_sob_demanda']} ped)",
+            metricas["comissao_cobrada_sob_demanda"],
+            flag_sob_demanda,
+        )
 
-    flag_taxa = "  ✓" if abs(div_taxa) < 1 else f"  Δ {div_taxa:+,.2f}"
-    linha(f"Taxa transação online ({r['n_base_trans']} ped)",
-          r["taxa_trans_cobrada"], flag_taxa)
-    sublinha(f"base: Pgto APP excl. VR/SODEXO/ALELO (todos status)",
-             f"R$ {r['base_trans_valor']:>10,.2f}")
-    sublinha(f"esperado {TAXA_TRANSACAO_ONLINE*100:.0f}% (contrato)",
-             brl(r["taxa_trans_esperada"]))
+    flag_taxa_transacao = "  ✓" if abs(divergencia_taxa_transacao) < 1 else f"  Δ {divergencia_taxa_transacao:+,.2f}"
+    imprimir_linha(
+        f"Taxa transação online ({metricas['qtd_pedidos_com_taxa_transacao']} ped)",
+        metricas["taxa_transacao_cobrada"],
+        flag_taxa_transacao,
+    )
+    imprimir_detalhe(
+        "base: Pgto APP excl. VR/SODEXO/ALELO (todos status)",
+        f"R$ {metricas['base_calculo_taxa_transacao']:>10,.2f}",
+    )
+    imprimir_detalhe(
+        f"esperado {TAXA_TRANSACAO_PAGAMENTO_APP*100:.0f}% (contrato)",
+        formatar_brl(metricas["taxa_transacao_esperada"]),
+    )
 
     # ── Serviços ──────────────────────────────────────────────────
-    secao("SERVIÇOS")
+    imprimir_cabecalho_secao("SERVIÇOS")
     print(f"  {'Pacote de anúncios':<50} {'[não conciliável via pedidos]':>22}")
-    if r["sob_demanda_servico"] != 0:
-        linha(f"Solicitação sob demanda ({r['n_sob']} ped)",
-              r["sob_demanda_servico"],
-              "  ← taxa entrega SOB DEMANDA ON")
+    if metricas["custo_logistico_sob_demanda"] != 0:
+        imprimir_linha(
+            f"Solicitação sob demanda ({metricas['qtd_pedidos_sob_demanda']} ped)",
+            metricas["custo_logistico_sob_demanda"],
+            "  ← taxa entrega SOB DEMANDA ON",
+        )
     else:
         print(f"  {'Solicitação sob demanda':<50} {'R$       0,00':>14}  ← sem pedidos")
 
     # ── Promoções ─────────────────────────────────────────────────
-    secao("PROMOÇÕES")
-    linha("Incentivadas pela loja",  r["promo_loja"],
-          "  ← INCENTIVO PROMOCIONAL DA LOJA (concluídos)")
-    linha("Incentivadas pelo iFood", r["promo_ifood"],
-          "  ← informativo (custo iFood)")
+    imprimir_cabecalho_secao("PROMOÇÕES")
+    imprimir_linha(
+        "Incentivadas pela loja",
+        metricas["desconto_promocional_loja"],
+        "  ← INCENTIVO PROMOCIONAL DA LOJA (concluídos)",
+    )
+    imprimir_linha(
+        "Incentivadas pelo iFood",
+        metricas["incentivo_promocional_ifood"],
+        "  ← informativo (custo iFood)",
+    )
 
     # ── Total do repasse ──────────────────────────────────────────
-    secao("TOTAL DO REPASSE")
-    linha(f"Recebido direto na loja ({r['n_diretos']} ped)",
-          r["direto_loja"],
-          "  ← Dinheiro + Pgto na Entrega + VR/SODEXO/ALELO APP")
-    linha("Valor do repasse iFood",
-          r["valor_repasse"],
-          "  ← VALOR LIQUIDO pedidos não-diretos concluídos")
+    imprimir_cabecalho_secao("TOTAL DO REPASSE")
+    imprimir_linha(
+        f"Recebido direto na loja ({metricas['qtd_pedidos_direto_na_loja']} ped)",
+        metricas["total_recebido_direto_na_loja"],
+        "  ← Dinheiro + Pgto na Entrega + VR/SODEXO/ALELO APP",
+    )
+    imprimir_linha(
+        "Valor do repasse iFood",
+        metricas["total_repasse_ifood"],
+        "  ← VALOR LIQUIDO pedidos não-diretos concluídos",
+    )
 
-    # ── Divergência ───────────────────────────────────────────────
-    if abs(div_own) > 1:
+    # ── Alerta de divergência ──────────────────────────────────────
+    if abs(divergencia_entrega_propria) > 1:
         print(f"\n  {'─' * 66}")
-        print(f"  ⚠  COBRANÇA INDEVIDA — Entrega Própria:  R$ {-div_own:,.2f}")
-        print(f"     {TAXA_COMISSAO_ESCALONADA*100:.0f}% contratado vs cobrado "
-              f"sobre R$ {r['base_own']:,.2f}")
+        print(f"  ⚠  COBRANÇA INDEVIDA — Entrega Própria:  R$ {-divergencia_entrega_propria:,.2f}")
+        print(
+            f"     {COMISSAO_ENTREGA_PROPRIA*100:.0f}% contratado vs cobrado "
+            f"sobre R$ {metricas['base_calculo_entrega_propria']:,.2f}"
+        )
 
-# ── Resumo ────────────────────────────────────────────────────────
-print(f"\n{SEP}")
+# ── Resumo final ───────────────────────────────────────────────────
+print(f"\n{SEPARADOR}")
 print(f"  RESUMO — DIVERGÊNCIAS DA SEMANA (3 lojas)")
 print(f"{'─' * 70}")
-if abs(totais["div_own"]) > 1:
-    print(f"  ⚠  Comissão própria cobrada a mais:   R$ {-totais['div_own']:>10,.2f}")
-    print(f"     Projeção mensal  (~4 semanas):      R$ {-totais['div_own']*4:>10,.2f}")
-    print(f"     Projeção anual   (~52 semanas):     R$ {-totais['div_own']*52:>10,.2f}")
+if abs(divergencia_entrega_propria_total) > 1:
+    print(f"  ⚠  Comissão própria cobrada a mais:   R$ {-divergencia_entrega_propria_total:>10,.2f}")
+    print(f"     Projeção mensal  (~4 semanas):      R$ {-divergencia_entrega_propria_total*4:>10,.2f}")
+    print(f"     Projeção anual   (~52 semanas):     R$ {-divergencia_entrega_propria_total*52:>10,.2f}")
 else:
     print(f"  ✓  Comissões dentro do esperado contratual.")
-print(f"{SEP}\n")
+print(f"{SEPARADOR}\n")
