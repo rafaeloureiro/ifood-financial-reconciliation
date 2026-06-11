@@ -5,7 +5,7 @@ import openpyxl
 # CONFIGURAÇÃO
 # ==========================================================
 
-ARQUIVO = "pedidos.xlsx"
+ARQUIVO = r"C:\Users\rafae\OneDrive\Desktop\Lab. de testes\Relatorios Ifood\conciliacao-de-faturamento\conciliacao_02\pedidos.xlsx"
 
 # Taxas contratuais
 TAXA_COMISSAO_ESCALONADA  = 0.09    # Entrega própria — base: VALOR_ITENS bruto
