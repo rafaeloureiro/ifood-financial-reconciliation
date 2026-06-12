@@ -17,15 +17,32 @@ TAXA_TRANSACAO_PAGAMENTO_APP = 0.03    # Pagamentos via APP, exceto VR/SODEXO/AL
 # Tolerância para considerar uma divergência relevante (em R$)
 TOLERANCIA_DIVERGENCIA = 1.00
 
-# Formas de pagamento que não geram taxa de transação nem entram no repasse iFood.
-# VR/SODEXO/ALELO via APP são isentos de taxa E recebidos direto na loja —
-# por isso aparecem em ambas as listas abaixo (intencional).
+# ──────────────────────────────────────────────────────────
+# Taxa de transação (3% sobre pagamentos via APP)
+# ──────────────────────────────────────────────────────────
+# A taxa de transação só incide sobre pagamentos feitos "via APP".
+# Dinheiro, Pgto na Entrega e Outros vales JÁ são isentos por não
+# serem "via APP" — não precisam constar nesta lista.
+#
+# Esta lista cobre apenas a EXCEÇÃO: pagamentos "via APP" que,
+# mesmo assim, são isentos da taxa (vales-refeição).
 FORMAS_PAGAMENTO_ISENTAS_TAXA = [
     "Pgto via APP - Vale Refeição (VR)",
     "Pgto via APP - Vale Refeição (SODEXO)",
     "Pgto via APP - Vale Refeição (ALELO)",
 ]
 
+# ──────────────────────────────────────────────────────────
+# Pagamentos recebidos diretamente na loja (fora do repasse iFood)
+# ──────────────────────────────────────────────────────────
+# Inclui Dinheiro, Pgto na Entrega e Outros vales (ver função
+# pagamento_recebido_na_loja) MAIS os vales-refeição pagos via APP
+# listados abaixo — que, embora processados pelo APP, são repassados
+# diretamente ao restaurante pela operadora do vale, não pelo iFood.
+#
+# É a mesma lista de FORMAS_PAGAMENTO_ISENTAS_TAXA, mas representa
+# uma regra de negócio diferente (repasse, não taxa) — mantida
+# separada de propósito para não acoplar as duas regras.
 FORMAS_PAGAMENTO_DIRETO_LOJA = [
     "Pgto via APP - Vale Refeição (VR)",
     "Pgto via APP - Vale Refeição (SODEXO)",
